@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package protocol.pay.v1;
+
+import "google/protobuf/empty.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/hardstylez72/bakso_ayam/proto/gen/go/protocol/stats/v1;paypb";
+
+
+message Coin {
+  string address = 1 [(buf.validate.field).required = true];
+  Chain chain = 2 [(buf.validate.field).required = true];
+  Token coin_name = 3 [(buf.validate.field).required = true];
+  int64  decimals = 4 [(buf.validate.field).required = true];
+}
+
+message CoinsReq {}
+
+message CoinsRes {
+  repeated Coin coins = 1;
+}
+
+service PayService {
+  rpc Coins(google.protobuf.Empty) returns (CoinsRes);
+  rpc Txs(TxsReq) returns (TxsRes);
+}
+
+enum TxDirection {
+  DirectionUnknown = 0;
+  DirectionIn = 1;
+  DirectionOut = 2;
+}
+
+enum Chain {
+  ChainUnknown = 0;
+  ChainTron = 1;
+}
+
+enum Token {
+  TokenUnknown = 0;
+  TokenUSDT = 1;
+}
+
+message TxsReq {
+    TxDirection direction = 1;
+    string address = 2;
+    Chain chain = 3;
+}
+
+message TxsRes {
+  repeated Tx txs = 1;
+}
+
+enum TxStatus {
+  TxStatusUnknown = 0;
+  TxStatusOK = 1;
+  TxStatusNOK = 2;
+  TxStatusW8 = 3;
+}
+
+message Tx {
+  string from = 1;
+  string to = 2;
+  Token token = 3;
+  string amount = 4;
+  TxStatus status = 5;
+  google.protobuf.Timestamp created = 6;
+}
+
+message WalletReq {
+  string user_id = 1;
+}
+
+
+message CreatePaymentIntentReq {
+  // Payment Intent.
+  // Required: <payment_intent.expired> and <payment_intent.money>.
+  // Optional: <payment_intent.addresses[].id>, <payment_intent.internal_id> and <payment_intent.transaction_speed>.
+//  PaymentIntent payment_intent = 1 [
+//    (buf.validate.field).required = true,
+//    (buf.validate.field).cel = {
+//      id: "payment_intent_required",
+//      expression: "!(has(this.coin) && has(this.money))"
+//    }
+//  ];
+}
