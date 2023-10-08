@@ -1,11 +1,7 @@
 package tronscan
 
 import (
-	"bakso_ayam/pkg/log"
-	"bakso_ayam/pkg/scanner"
-	paypb "bakso_ayam/proto/gen/go/protocol/stats/v1"
 	"context"
-	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -13,52 +9,76 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hardstylez72/bakso_ayam/pkg/log"
+	"github.com/hardstylez72/bakso_ayam/pkg/scanner"
+	pbv1 "github.com/hardstylez72/bakso_ayam/proto/gen/go/protocol/stats/v1"
+	"github.com/pkg/errors"
+	"go.uber.org/ratelimit"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const HostProd = "https://apilist.tronscanapi.com"
+const HostProd = "https://api.trongrid.io"
+
+//docs - https://developers.tron.network/reference/select-network
 
 type Client struct {
 	HttpCli *http.Client
 	Host    string
 	Logger  log.Logger
+	ApiKey  string
 }
 
-var CoinMap = map[string]*paypb.Coin{
+var CoinMap = map[string]*pbv1.Coin{
 	"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t": {
 		Address:  "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
-		Chain:    paypb.Chain_ChainTron,
-		CoinName: paypb.Token_TokenUSDT,
+		Chain:    pbv1.Chain_ChainTron,
+		CoinName: pbv1.Token_TokenUSDT,
 		Decimals: 6,
+	},
+	"THk5qH79SoAaUnUh8JVdRarSESTZpqPjSQ": {
+		Address:  "THk5qH79SoAaUnUh8JVdRarSESTZpqPjSQ",
+		Chain:    pbv1.Chain_ChainTron,
+		CoinName: pbv1.Token_TokenUSDT,
+		Decimals: 18,
+	},
+	"TTmQYPPZ3N3AfSFx4NKm4or2zwDn8dvKRE": {
+		Address:  "THk5qH79SoAaUnUh8JVdRarSESTZpqPjSQ",
+		Chain:    pbv1.Chain_ChainTron,
+		CoinName: pbv1.Token_TokenUSDT,
+		Decimals: 18,
 	},
 }
 
-func tokenAmWei(addr string, am string) (*big.Int, paypb.Token, error) {
+func tokenAmWei(addr string, am string) (*big.Int, pbv1.Token, error) {
 
 	t, ok := CoinMap[addr]
 	if !ok {
-		return nil, paypb.Token_TokenUnknown, errors.New("token is not supported: " + addr)
+		return nil, pbv1.Token_TokenUnknown, errors.New("token is not supported: " + addr)
 	}
 
 	b, ok := big.NewInt(0).SetString(am, 10)
 	if !ok {
-		return nil, paypb.Token_TokenUnknown, errors.New("invalid amount")
+		return nil, pbv1.Token_TokenUnknown, errors.New("invalid amount")
 	}
 
 	return b, t.CoinName, nil
 
 }
 
+var rl = ratelimit.New(1, ratelimit.Per(time.Second))
+
 func NewClient() *Client {
+
 	return &Client{
 		HttpCli: &http.Client{},
 		Host:    HostProd,
+		Logger:  nil,
 	}
 }
 
-func (c *Client) Spec() []*paypb.Coin {
+func (c *Client) Spec() []*pbv1.Coin {
 
-	out := make([]*paypb.Coin, 0)
+	out := make([]*pbv1.Coin, 0)
 
 	for _, coin := range CoinMap {
 		out = append(out, coin)
@@ -78,56 +98,70 @@ func (c *Client) Err(err error, s string) {
 	}
 }
 
-func (c *Client) Txs(ctx context.Context, util time.Time, addr string) ([]*paypb.Tx, error) {
+func (c *Client) Txs(ctx context.Context, util time.Time, addr string, direction pbv1.TxDirection) ([]*pbv1.Tx, error) {
 
-	start := 0
-	limit := 50
+	limit := 200 // максимум
 
-	out := make([]*paypb.Tx, 0)
-
-	untilUnix := util.Unix()
+	out := make([]*pbv1.Tx, 0)
 
 	pack := 1
 
-	pn := "pack: " + strconv.Itoa(pack) + " "
+	fromBase := time.Now()
+
+	c.Debug("request for address " + addr + " direction: " + direction.String())
+	c.Debug(" from " + fromBase.Format(time.DateTime) + " to " + util.Format(time.DateTime))
+
+	from := fromBase
+
+	next := c.base(&TxReq{
+		Limit:     limit,
+		From:      from,
+		To:        util,
+		Addr:      addr,
+		Sort:      "-timestamp",
+		Direction: direction,
+	})
+
 	for {
 
-		if c.Logger != nil {
-			c.Logger.Debug(pn + "ask for " + strconv.Itoa(limit) + " txs from " + strconv.Itoa(start))
+		c.Debug("всего: " + strconv.Itoa(len(out)))
+
+		if next == "" {
+			return out, nil
 		}
 
-		res, err := c.tx(ctx, &TxReq{
-			Limit: limit,
-			Start: start,
-			Addr:  addr,
-			Sort:  "-timestamp",
-		})
+		pn := "[pack: " + strconv.Itoa(pack) + "] "
 
-		c.Debug(pn + "received " + strconv.Itoa(len(res.Data)) + " txs from " + strconv.Itoa(start))
+		c.Logger.Debug(pn + "ask for " + strconv.Itoa(limit) + " txs from ")
 
-		start += len(res.Data)
+		res, err := c.nextTx(ctx, next)
 		if err != nil {
-			return nil, err
+			return nil, errors.Wrap(err, "tronscan.tx")
 		}
 
-		out = append(out, c.castTx(res)...)
+		next = res.Meta.Links.Next
 
-		c.Debug(pn + "total txs: " + strconv.Itoa(len(out)))
+		c.Debug(pn + "received " + strconv.Itoa(len(res.Data)))
 
-		sort.Slice(out, func(i, j int) bool {
-			return out[i].Created.AsTime().After(out[j].Created.AsTime())
+		if len(res.Data) == 0 {
+			break
+		}
+
+		tmp := c.castTx(res)
+		out = append(out, tmp...)
+
+		if len(tmp) == 0 {
+			continue
+		}
+
+		sort.Slice(tmp, func(i, j int) bool {
+			return tmp[i].Created.AsTime().After(tmp[j].Created.AsTime())
 		})
 
-		max := out[0].Created.AsTime()
-		min := out[len(out)-1].Created.AsTime()
+		max := tmp[0].Created.AsTime()
+		min := tmp[len(tmp)-1].Created.AsTime()
 
-		c.Debug(fmt.Sprintf(pn+"[%s %s]", min.String(), max.String()))
-
-		if len(out) > 0 {
-			if min.Unix() < untilUnix {
-				break
-			}
-		}
+		c.Debug(fmt.Sprintf(pn+"[%s %s]", min.Format(time.DateTime), max.Format(time.DateTime)))
 
 		pack++
 	}
@@ -137,84 +171,62 @@ func (c *Client) Txs(ctx context.Context, util time.Time, addr string) ([]*paypb
 	return out, nil
 }
 
-func filter(in []*paypb.Tx, until time.Time) []*paypb.Tx {
+func filter(in []*pbv1.Tx, until time.Time) []*pbv1.Tx {
 
-	sort.Slice(in, func(i, j int) bool {
-		return in[i].Created.AsTime().After(in[j].Created.AsTime())
+	uniq := make(map[string]*pbv1.Tx)
+
+	for _, el := range in {
+		uniq[el.From+el.To+el.Amount+el.Created.String()] = el
+	}
+
+	tmp := make([]*pbv1.Tx, 0)
+	for _, tx := range uniq {
+		tmp = append(tmp, tx)
+	}
+
+	sort.Slice(tmp, func(i, j int) bool {
+		return tmp[i].Created.AsTime().After(tmp[j].Created.AsTime())
 	})
 
-	out := make([]*paypb.Tx, 0)
-	for i := range in {
-		if in[i].Created.AsTime().UnixMilli() < until.UnixMilli() {
+	out := make([]*pbv1.Tx, 0)
+	for i := range tmp {
+		if tmp[i].Created.AsTime().UnixMilli() < until.UnixMilli() {
 			break
 		}
-		out = append(out, in[i])
+		out = append(out, tmp[i])
 	}
 
 	return out
 }
 
 type TxReq struct {
-	Limit int
-	Start int
-	Addr  string
-	Sort  string
+	Limit     int
+	From      time.Time
+	To        time.Time
+	Addr      string
+	Sort      string
+	Direction pbv1.TxDirection
 }
 
-func (c *Client) castTx(r *TxRes) []*paypb.Tx {
-	out := make([]*paypb.Tx, 0)
+func (c *Client) castTx(r *TxRes) []*pbv1.Tx {
+	out := make([]*pbv1.Tx, 0)
 
 	for _, el := range r.Data {
 
-		if el.TriggerInfo == nil {
-			continue
-		}
-
-		tokenAddr, err := extract[string](el.TriggerInfo, "contract_address")
+		am, token, err := tokenAmWei(el.TokenInfo.Address, el.Value)
 		if err != nil {
 			c.Err(err, "extract")
 			continue
 		}
 
-		methodName, err := extract[string](el.TriggerInfo, "methodName")
-		if err != nil {
-			c.Err(err, "extract")
-			continue
-		}
+		status := pbv1.TxStatus_TxStatusOK
 
-		if *methodName != "transfer" {
-			continue
-		}
-
-		parameter, err := extract[map[string]any](el.TriggerInfo, "parameter")
-		if err != nil {
-			c.Err(err, "extract")
-			continue
-		}
-
-		value, err := extract[string](*parameter, "_value")
-		if err != nil {
-			c.Err(err, "extract")
-			continue
-		}
-
-		am, token, err := tokenAmWei(*tokenAddr, *value)
-		if err != nil {
-			c.Err(err, "extract")
-			continue
-		}
-
-		status := paypb.TxStatus_TxStatusW8
-		if el.Result == "SUCCESS" {
-			status = paypb.TxStatus_TxStatusOK
-		}
-
-		out = append(out, &paypb.Tx{
-			From:    el.ContractData.OwnerAddress,
+		out = append(out, &pbv1.Tx{
+			From:    el.From,
 			Status:  status,
 			Token:   token,
-			Created: timestamppb.New(time.UnixMilli(el.Timestamp)),
-			To:      el.ToAddress,
+			Created: timestamppb.New(time.UnixMilli(el.BlockTimestamp)),
+			To:      el.To,
 			Amount:  am.String(),
 		})
 	}
@@ -223,94 +235,61 @@ func (c *Client) castTx(r *TxRes) []*paypb.Tx {
 }
 
 type TxRes struct {
-	Total      int `json:"total"`
-	RangeTotal int `json:"rangeTotal"`
-	Data       []struct {
-		Block           int      `json:"block"`
-		Hash            string   `json:"hash"`
-		Timestamp       int64    `json:"timestamp"`
-		OwnerAddress    string   `json:"ownerAddress"`
-		OwnerAddressTag string   `json:"ownerAddressTag"`
-		ToAddressList   []string `json:"toAddressList"`
-		ToAddress       string   `json:"toAddress"`
-		ContractType    int      `json:"contractType"`
-		Confirmed       bool     `json:"confirmed"`
-		Revert          bool     `json:"revert"`
-		ContractData    struct {
-			Data            string `json:"data,omitempty"`
-			OwnerAddress    string `json:"owner_address"`
-			ContractAddress string `json:"contract_address,omitempty"`
-			Amount          int64  `json:"amount,omitempty"`
-			ToAddress       string `json:"to_address,omitempty"`
-		} `json:"contractData"`
-		SmartCalls  string `json:"SmartCalls"`
-		Events      string `json:"Events"`
-		Id          string `json:"id"`
-		Data        string `json:"data"`
-		Fee         string `json:"fee"`
-		ContractRet string `json:"contractRet"`
-		Result      string `json:"result"`
-		Amount      string `json:"amount"`
-		CheatStatus bool   `json:"cheatStatus"`
-		Cost        struct {
-			NetFee             int `json:"net_fee"`
-			EnergyPenaltyTotal int `json:"energy_penalty_total"`
-			EnergyUsage        int `json:"energy_usage"`
-			Fee                int `json:"fee"`
-			EnergyFee          int `json:"energy_fee"`
-			EnergyUsageTotal   int `json:"energy_usage_total"`
-			OriginEnergyUsage  int `json:"origin_energy_usage"`
-			NetUsage           int `json:"net_usage"`
-		} `json:"cost"`
-		TokenInfo struct {
-			TokenId      string `json:"tokenId"`
-			TokenAbbr    string `json:"tokenAbbr"`
-			TokenName    string `json:"tokenName"`
-			TokenDecimal int    `json:"tokenDecimal"`
-			TokenCanShow int    `json:"tokenCanShow"`
-			TokenType    string `json:"tokenType"`
-			TokenLogo    string `json:"tokenLogo"`
-			TokenLevel   string `json:"tokenLevel"`
-			Vip          bool   `json:"vip"`
-		} `json:"tokenInfo"`
-		TokenType       string         `json:"tokenType"`
-		TriggerInfo     map[string]any `json:"trigger_info,omitempty"`
-		RiskTransaction bool           `json:"riskTransaction"`
+	Data []struct {
+		TransactionId string `json:"transaction_id"`
+		TokenInfo     struct {
+			Symbol   string `json:"symbol"`
+			Address  string `json:"address"`
+			Decimals int    `json:"decimals"`
+			Name     string `json:"name"`
+		} `json:"token_info"`
+		BlockTimestamp int64  `json:"block_timestamp"`
+		From           string `json:"from"`
+		To             string `json:"to"`
+		Type           string `json:"type"`
+		Value          string `json:"value"`
 	} `json:"data"`
-	WholeChainTxCount int64           `json:"wholeChainTxCount"`
-	ContractMap       map[string]bool `json:"contractMap"`
+	Success bool `json:"success"`
+	Meta    struct {
+		At          int64  `json:"at"`
+		Fingerprint string `json:"fingerprint"`
+		Links       struct {
+			Next string `json:"next"`
+		} `json:"links"`
+		PageSize int `json:"page_size"`
+	} `json:"meta"`
 }
 
-func (c *Client) tx(ctx context.Context, req *TxReq) (*TxRes, error) {
+func (c *Client) nextTx(ctx context.Context, u string) (*TxRes, error) {
+	rl.Take()
+
+	m := map[string]string{"TRON-PRO-API-KEY": c.ApiKey}
+
+	return scanner.Request[TxReq, TxRes](ctx, c.HttpCli, http.MethodGet, u, nil, m)
+}
+func (c *Client) base(req *TxReq) string {
 
 	url := scanner.MakeUrl(c.Host,
-		"/api/transaction?sort=", req.Sort,
-		"&count=true",
-		"&limit=", strconv.Itoa(req.Limit),
-		"&start=", strconv.Itoa(req.Start),
-		"&address=", req.Addr,
+		"/v1/accounts/", req.Addr,
+		"/transactions/trc20?limit=", strconv.Itoa(req.Limit),
+		"&only_confirmed=true",
+		"&min_timestamp=", req.From.Format("2006-01-02T15:04:05"),
+		//"&max_timestamp=", req.To.Format("2006-01-02T15:04:05"),
+		"&order_by=block_timestamp,desc",
+		//"&address=", req.Addr,
 	)
 
-	return scanner.Request[TxReq, TxRes](ctx, c.HttpCli, http.MethodGet, url, req)
+	switch req.Direction {
+	case pbv1.TxDirection_DirectionIn:
+		url += "&only_to=true"
+	case pbv1.TxDirection_DirectionOut:
+		url += "&only_from=true"
+	}
+
+	return url
 }
 
+//https://api.trongrid.io/v1/accounts/THeRkUEytKBT3kRYmGqcu5YsWxuFwKAwNs/transactions/trc20?limit=3&only_confirmed=true&min_timestamp=2023-10-08T08:53:48&max_timestamp=2022-10-13T00:53:48&order_by=block_timestamp,asc&only_from=true
+//https://api.trongrid.io/v1/accounts/THeRkUEytKBT3kRYmGqcu5YsWxuFwKAwNs/transactions/trc20?limit=3&only_confirmed=true&min_timestamp=2023-10-08T08:53:48&max_timestamp=2022-10-13T00:53:48&order_by=block_timestamp,asc&only_from=true
 //https://apilist.tronscanapi.com/transaction?sort=-timestamp&count=true&limit=100&start=0&address=TNM7ySgqGHHu7gbymh3yinLLp4aR9c7N2W
 //https://apilist.tronscanapi.com/api/transaction?sort=-timestamp&count=true&limit=20&start=0&address=TNM7ySgqGHHu7gbymh3yinLLp4aR9c7N2W
-
-func extract[T any](m map[string]any, key string) (*T, error) {
-	if m == nil {
-		return nil, errors.New("m is empty")
-	}
-
-	v, ok := m[key]
-	if !ok {
-		return nil, errors.New("no such key")
-	}
-
-	vc, ok := v.(T)
-	if !ok {
-		return nil, errors.New("key is not type of T")
-	}
-
-	return &vc, nil
-}

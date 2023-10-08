@@ -4,7 +4,7 @@
 // - protoc             (unknown)
 // source: protocol/stats/v1/service.proto
 
-package paypb
+package pbv1
 
 import (
 	context "context"

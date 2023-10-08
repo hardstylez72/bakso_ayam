@@ -14,7 +14,7 @@ func MakeUrl(strs ...string) string {
 	return strings.Join(strs, "")
 }
 
-func Request[Req any, Res any](ctx context.Context, cli *http.Client, method string, url string, req *Req) (*Res, error) {
+func Request[Req any, Res any](ctx context.Context, cli *http.Client, method string, u string, req *Req, h map[string]string) (*Res, error) {
 
 	marshal, err := json.Marshal(req)
 	if err != nil {
@@ -28,11 +28,17 @@ func Request[Req any, Res any](ctx context.Context, cli *http.Client, method str
 		reqBody = nil
 	}
 
-	r, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+	r, err := http.NewRequestWithContext(ctx, method, u, reqBody)
 	if err != nil {
 		return nil, err
 	}
 	r.Header.Set("Content-Type", "application/json")
+
+	if h != nil {
+		for k, v := range h {
+			r.Header.Set(k, v)
+		}
+	}
 	res, err := cli.Do(r)
 	if err != nil {
 		return nil, err

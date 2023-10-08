@@ -1,0 +1,12 @@
+version: '3.9'
+
+services:
+  bakso_ayam:
+    image: hardstylez72/bakso_ayam:v0.0.4
+    restart: always
+    ports:
+      - '9011:9010'
+    environment:
+      - GRPC_PORT=9010
+      - TRON_GRID_API_KEY=56d70809-dc34-44d5-a99c-xxxxx0687a34 #https://www.trongrid.io/register
+

@@ -1,11 +1,11 @@
 package tronscan
 
 import (
-	"bakso_ayam/pkg/log"
 	"context"
 	"testing"
 	"time"
 
+	"github.com/hardstylez72/bakso_ayam/pkg/log"
 	"github.com/stretchr/testify/assert"
 )
 

@@ -6,7 +6,7 @@ import "google/protobuf/empty.proto";
 import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/hardstylez72/bakso_ayam/proto/gen/go/protocol/stats/v1;paypb";
+option go_package = "github.com/hardstylez72/bakso_ayam/proto/gen/go/protocol/stats/v1;pbv1";
 
 
 message Coin {
@@ -47,6 +47,7 @@ message TxsReq {
     TxDirection direction = 1;
     string address = 2;
     Chain chain = 3;
+    google.protobuf.Timestamp until = 4;
 }
 
 message TxsRes {
@@ -74,7 +75,7 @@ message WalletReq {
 }
 
 
-message CreatePaymentIntentReq {
+//message CreatePaymentIntentReq {
   // Payment Intent.
   // Required: <payment_intent.expired> and <payment_intent.money>.
   // Optional: <payment_intent.addresses[].id>, <payment_intent.internal_id> and <payment_intent.transaction_speed>.
@@ -85,4 +86,4 @@ message CreatePaymentIntentReq {
 //      expression: "!(has(this.coin) && has(this.money))"
 //    }
 //  ];
-}
+//}
